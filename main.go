@@ -29,6 +29,8 @@ var (
 		version    bool
 		verbose    bool
 		switchType string
+		critical   string
+		warning    string
 	}
 )
 
@@ -39,7 +41,8 @@ func init() {
 Check CISCO ASA status
 Usage: 
 	check_ciscoasa (-h | --help | --version)
-	check_ciscoasa status (-H <host> | --host=<host>) (-u <username> | --username=<username>) [-p <password> | --password=<password> | -i <pkey_file> | --identity=<pkey_file] [-P <port> | --port=<port>] 
+	check_ciscoasa failover | uauth (-H <host> | --host=<host>) (-u <username> | --username=<username>) [-p <password> | --password=<password> | -i <pkey_file> | --identity=<pkey_file] [-P <port> | --port=<port>] 
+	check_ciscoasa status (-H <host> | --host=<host>) (-u <username> | --username=<username>) (-c <critical> | --critical=<critical>) (-w <warning> | --warning=<warning>) [-p <password> | --password=<password> | -i <pkey_file> | --identity=<pkey_file] [-P <port> | --port=<port>] 
 Options:
 	--version  				Show check_ciscoasa version.
 	-h --help  				Show this screen.
@@ -49,6 +52,9 @@ Options:
 	-p <password> --password=<password>  	Password
 	-i <pkey_file> --identity=<pkey_file>  	Private key file [default: ~/.ssh/id_rsa]
 	-P <port> --port=<port>  		Port number [default: 22]
+	-c <critical> --critical=<critical>		% CPU usage critical threshold {5s;1m;5m}
+	-w <warning> --warning=<warning>		% CPU usage critical threshold {5s;1m;5m}
+
 `
 	// Don't parse command line argument for testing argument must be passed with OS environment variable
 	if os.Getenv("CHECK_MODE") == "TEST" {
@@ -66,6 +72,8 @@ Options:
 		}
 		params.verbose, _ = strconv.ParseBool(os.Getenv("VERBOSE"))
 		params.command = os.Getenv("COMMAND")
+		params.critical = os.Getenv("CRITICAL")
+		params.warning = os.Getenv("WARNING")
 	} else {
 		arguments, err = docopt.ParseDoc(usage)
 		if err != nil {
@@ -84,15 +92,17 @@ Options:
 		params.password, _ = arguments.String("--password")
 		params.identity, _ = arguments.String("--identity")
 		params.verbose, _ = arguments.Bool("--verbose")
+		params.critical, _ = arguments.String("--critical")
+		params.warning, _ = arguments.String("--warning")
 	}
 }
 
 func main() {
 	var err error
 	var icinga ict.Icinga
-	var sw ict.SwitchInterface
+	var asa *CiscoASA
 
-	sw = NewCiscoSwitch(params.host)
+	asa = NewCiscoASA(params.host)
 
 	// We return version of program and exit with Ok status
 	if params.version {
@@ -103,7 +113,7 @@ func main() {
 	// Check command arguments and calling method
 	switch params.command {
 	case "status":
-		icinga, err = sw.CheckInterfaceStatus(params.host, params.username, params.password, params.identity, params.port)
+		icinga, err = asa.CheckStatus(params.host, params.username, params.password, params.identity, params.port, params.critical, params.warning)
 		if err != nil {
 			fmt.Printf("%s: Error CheckInterfaceStatus => %s", ict.CriMsg, err)
 			os.Exit(ict.CriExit)

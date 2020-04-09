@@ -314,7 +314,7 @@ func TestMain(m *testing.M) {
 
 // Testing basic parsing if error occurs with mock response we stop test with failed status
 func TestCiscoSwitch_ParseInterfaceStatus(t *testing.T) {
-	sw = NewCiscoSwitch(params.host)
+	sw = NewCiscoASA(params.host)
 	if err := sw.ParseInterfaceStatus(Cisco2960Response); err != nil {
 		t.Fatalf("Error parsing C2960 response: %s", err)
 	}

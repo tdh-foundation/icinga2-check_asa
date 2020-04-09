@@ -4,9 +4,16 @@ package main
 
 import (
 	"fmt"
-	ict "github.com/tdh-foundation/icinga2-go-checktools"
-	"regexp"
+	"math"
 	"strings"
+
+	//"fmt"
+	ict "github.com/tdh-foundation/icinga2-go-checktools"
+	"log"
+	"os"
+	"regexp"
+	"strconv"
+	//"strings"
 )
 
 //noinspection ALL
@@ -35,198 +42,247 @@ var (
 	DownCondition = []*regexp.Regexp{NotConnected, Disabled, DownStatus, XcrvrAbsen}
 )
 
-// CiscoASAStatus implement SwitchStatus Interface
-type CiscoASAStatus ict.SwitchStatus
-
-// Instantiate a new CiscoASAStatus
-func NewCiscoSwitch(name string) *CiscoASAStatus {
-	cs := new(CiscoASAStatus)
-	cs.Name = name
-	return cs
+type CiscoASA struct {
+	Name string
 }
 
-// getStatusCondition is a private method who return Icinga Exit condition value
-func getStatusCondition(status ict.SwitchInterfaceStatus) int {
-	for i := range OkCondition {
-		if OkCondition[i].MatchString(status.Status) {
-			return ict.OkExit
-		}
-	}
-	for i := range CriCondition {
-		if CriCondition[i].MatchString(status.Status) {
-			return ict.CriExit
-		}
-	}
-	for i := range WarCondition {
-		if WarCondition[i].MatchString(status.Status) {
-			return ict.WarExit
-		}
-	}
-	return ict.UnkExit
+// Instantiate a new CiscoASA
+func NewCiscoASA(name string) *CiscoASA {
+	ca := new(CiscoASA)
+	ca.Name = name
+	return ca
 }
 
-// getMetricCondition is a private method who return information about usage of interface for Icinga Metric
-func getMetricCondition(status ict.SwitchInterfaceStatus) int {
-	for i := range UpCondition {
-		if UpCondition[i].MatchString(status.Status) {
-			return Up
-		}
-	}
-	for i := range DownCondition {
-		if DownCondition[i].MatchString(status.Status) {
-			return Down
-		}
-	}
-	return Exception
-}
-
-// CheckInterfaceStatus
-func (cSwitchStatus *CiscoASAStatus) CheckInterfaceStatus(host string, username string, password string, identity string, port int) (ict.Icinga, error) {
+// CheckStatus check Cisco ASA environment conditions
+func (asa *CiscoASA) CheckStatus(host string, username string, password string, identity string, port int, critical string, warning string) (ict.Icinga, error) {
 
 	var ssh *ict.SSHTools
 
-	// Opening a ssh session to the switch
+	var reCooling = regexp.MustCompile(`(?mi)^\s*cooling Fan\s+(?P<number>\d+)\s*:\s+(?P<rpm>\d+)\s+RPM\s+-\s+(?P<status>.+)$`)
+	var reCPUTemp = regexp.MustCompile(`(?mi)^\s*Processor\s+(?P<number>\d+):\s*(?P<temp>\d+\.\d)\s+C\s+-\s+(?P<status>.+)$`)
+	var reAmbient = regexp.MustCompile(`(?mi)^\s*Ambient\s+(?P<number>\d+):\s*(?P<temp>\d+\.\d)\s+C\s+-\s+(?P<status>.*)\s+\((?P<name>.*)\)\s*$`)
+	var reCPU = regexp.MustCompile(`(?mi)^CPU utilization for.*=\s*(?P<cpu_5s>\d*)%;.*:\s*(?P<cpu_1m>\d*)%;.*:\s*(?P<cpu_5m>\d*)%\s*$`)
+	var reMem = regexp.MustCompile(`(?mi)^Free memory:\s+(?P<free_memory>\d+).+\((?P<percent_free_memory>\d*)%\)\s*$`)
+	var reThreshold = regexp.MustCompile(`(\d*)[,|;](\d*)[,|;](\d*).*`)
+
+	// Opening a ssh session to the cisco ASA
 	ssh, err = ict.NewSSHTools(host, username, password, identity, port)
 	if err != nil {
 		return ict.Icinga{}, err
 	}
 
-	// Sending command to the switch and getting returned data
-	err = ssh.SendSSH("show interface status")
+	// Sending commands to the Cisco ASA and getting returned data
+	err = ssh.SendSSHhasPTY([]string{"enable\n\n", "terminal pager 0\n", "show environment\n", "show cpu\n", "show mem\n"}, `(?i)^(.*\>.?)|(.*\#.?)|(Password:.?)$`)
 	if err != nil {
 		return ict.Icinga{}, err
 	}
 
-	// Parsing Stdout data to a structured slice
-	err = cSwitchStatus.ParseInterfaceStatus(ssh.Stdout)
-	if err != nil {
-		err = fmt.Errorf("error ParseInterfaceStatus: %v", err)
-		return ict.Icinga{}, err
+	//
+	// Parsing returned data
+	//
+	// Creating map for cooling conditions
+	keys := reCooling.SubexpNames()[1:]
+	var rpmCooling []map[string]string
+	for _, s := range reCooling.FindAllStringSubmatch(ssh.Stdout, -1) {
+		cooling := make(map[string]string)
+		for i, v := range s[1:] {
+			cooling[keys[i]] = v
+		}
+		rpmCooling = append(rpmCooling, cooling)
 	}
 
-	// Generate Icinga result "{status}:[Message][| Metric]"
-	return cSwitchStatus.ReturnIcingaResult(), nil
-}
+	// Creating map for CPU temperature
+	keys = reCPUTemp.SubexpNames()[1:]
+	var tempCPU []map[string]string
+	for _, s := range reCPUTemp.FindAllStringSubmatch(ssh.Stdout, -1) {
+		cpu := make(map[string]string)
+		for i, v := range s[1:] {
+			cpu[keys[i]] = v
+		}
+		tempCPU = append(tempCPU, cpu)
+	}
 
-// ParseInterfaceStatus from response received from Cisco Switch Request
-//noinspection GoNilness
-func (cSwitchStatus *CiscoASAStatus) ParseInterfaceStatus(response string) error {
+	// Creating map for ambient temperature
+	keys = reAmbient.SubexpNames()[1:]
+	var tempAmbient []map[string]string
+	for _, s := range reAmbient.FindAllStringSubmatch(ssh.Stdout, -1) {
+		ambient := make(map[string]string)
+		for i, v := range s[1:] {
+			ambient[keys[i]] = v
+		}
+		tempAmbient = append(tempAmbient, ambient)
+	}
 
-	// Clearing/resetting respStatus slice
-	cSwitchStatus.SwStatus = cSwitchStatus.SwStatus[:0]
+	// Creating map for CPU usage
+	keys = reCPU.SubexpNames()[1:]
+	var usageCPU []map[string]string
+	for _, s := range reCPU.FindAllStringSubmatch(ssh.Stdout, -1) {
+		cpu := make(map[string]string)
+		for i, v := range s[1:] {
+			cpu[keys[i]] = v
+		}
+		usageCPU = append(usageCPU, cpu)
+	}
 
-	// Converting multi-line string to slice of string
-	respStatus := strings.Split(response, "\n")
+	// Creating map for free memory information
+	keys = reMem.SubexpNames()[1:]
+	var usageMemory []map[string]string
+	for _, s := range reMem.FindAllStringSubmatch(ssh.Stdout, -1) {
+		memory := make(map[string]string)
+		for i, v := range s[1:] {
+			memory[keys[i]] = v
+		}
+		usageMemory = append(usageMemory, memory)
+	}
 
-	// Removing Blank and separator lines
-	var tmp []string
-	for _, s := range respStatus {
-		if s != "" && (len(s) >= 3 && s[0:3] != "---") {
-			tmp = append(tmp, s)
+	// Set exit condition depending status of all probes
+	var condition int = ict.OkExit
+	var message string = ""
+	var metrics string = ""
+
+	for _, ambient := range tempAmbient {
+		// Updating global status
+		if strings.TrimSpace(ambient["status"]) != "OK" {
+			condition = ict.CriExit
+			if message != "" {
+				message += "/"
+			}
+			message += fmt.Sprintf("Ambient %s temperature issue %s (%s °C)", ambient["name"], ambient["status"], ambient["temp"])
+		}
+		// Setting metrics
+		metrics += fmt.Sprintf("'%s [°C]'=%s ", ambient["name"], ambient["temp"])
+	}
+
+	for _, cpu := range tempCPU {
+		// Updating global status
+		if strings.TrimSpace(cpu["status"]) != "OK" {
+			condition = ict.CriExit
+			if message != "" {
+				message += "/"
+			}
+			message += fmt.Sprintf("CPU %s temperature issue %s (%s °C)", cpu["number"], cpu["status"], cpu["temp"])
+		}
+		// Setting metrics
+		metrics += fmt.Sprintf("'CPU %s [°C]'=%s ", cpu["number"], cpu["temp"])
+	}
+
+	for _, cpu := range usageCPU {
+		// Updating global status
+		criticalThreshold := reThreshold.FindStringSubmatch(critical)
+		warningThreshold := reThreshold.FindStringSubmatch(warning)
+		cpu5s, _ := strconv.Atoi(cpu["cpu_5s"])
+		cpu1m, _ := strconv.Atoi(cpu["cpu_1m"])
+		cpu5m, _ := strconv.Atoi(cpu["cpu_5m"])
+
+		if criticalThreshold != nil {
+			cpu5sTH, _ := strconv.Atoi(criticalThreshold[1])
+			cpu1mTH, _ := strconv.Atoi(criticalThreshold[2])
+			cpu5mTH, _ := strconv.Atoi(criticalThreshold[3])
+
+			if cpu5s > cpu5sTH {
+				condition = ict.CriExit
+				if message != "" {
+					message += "/"
+				}
+				message += fmt.Sprintf("5s CPU usage > %d%%", cpu5s)
+			}
+			if cpu1m > cpu1mTH {
+				condition = ict.CriExit
+				if message != "" {
+					message += "/"
+				}
+				message += fmt.Sprintf("1m CPU usage > %d%%", cpu1m)
+			}
+			if cpu5m > cpu5mTH {
+				condition = ict.CriExit
+				if message != "" {
+					message += "/"
+				}
+				message += fmt.Sprintf("5m CPU usage > %d%%", cpu5m)
+			}
+		}
+
+		if warningThreshold != nil {
+			cpu5sTH, _ := strconv.Atoi(warningThreshold[1])
+			cpu1mTH, _ := strconv.Atoi(warningThreshold[2])
+			cpu5mTH, _ := strconv.Atoi(warningThreshold[3])
+
+			if cpu5s > cpu5sTH && condition < ict.WarExit {
+				condition = ict.WarExit
+				if message != "" {
+					message += "/"
+				}
+				message += fmt.Sprintf("5s CPU usage > %d%%", cpu5s)
+			}
+			if cpu1m > cpu1mTH && condition < ict.WarExit {
+				condition = ict.WarExit
+				if message != "" {
+					message += "/"
+				}
+				message += fmt.Sprintf("1m CPU usage > %d%%", cpu1m)
+			}
+			if cpu5m > cpu5mTH && condition < ict.WarExit {
+				condition = ict.WarExit
+				if message != "" {
+					message += "/"
+				}
+				message += fmt.Sprintf("5m CPU usage > %d%%", cpu5m)
+			}
+		}
+
+		// Setting CPU usage metrics
+		metrics += fmt.Sprintf("'CPU usage [5s]'=%s%% ", cpu["cpu_5s"])
+		metrics += fmt.Sprintf("'CPU usage [1m]'=%s%% ", cpu["cpu_1m"])
+		metrics += fmt.Sprintf("'CPU usage [5m]'=%s%% ", cpu["cpu_5m"])
+	}
+
+	for _, cooling := range rpmCooling {
+		if strings.TrimSpace(cooling["status"]) != "OK" {
+			condition = ict.CriExit
+			if message != "" {
+				message += "/"
+			}
+			message += fmt.Sprintf("Cooling Fan %s issue %s (%s RPM)", cooling["number"], cooling["status"], cooling["rpm"])
+		}
+		// Setting metrics
+		metrics += fmt.Sprintf("'Fan %s [RPM]'=%s ", cooling["number"], cooling["rpm"])
+	}
+
+	for _, memory := range usageMemory {
+		// Updating global status
+		//TODO:Memory updating status depending threshold
+
+		// Setting CPU usage metrics
+		metrics += fmt.Sprintf("'Free memory [%%]'=%s%% ", memory["percent_free_memory"])
+		freeMem, _ := strconv.ParseFloat(memory["free_memory"], 64)
+		metrics += fmt.Sprintf("'Free memory [MB]'=%.2fMB ", freeMem/math.Pow(1024, 2))
+	}
+
+	// Print log values if program is called in Test mode
+	if os.Getenv("CHECK_MODE") == "TEST" {
+		for _, ambient := range tempAmbient {
+			log.Printf("%s - %s°C - %s.", ambient["name"], ambient["temp"], strings.TrimSpace(ambient["status"]))
+		}
+
+		for _, cpu := range tempCPU {
+			log.Printf("CPU %s - %s°C - %s\n", cpu["number"], cpu["temp"], cpu["status"])
+		}
+		for _, cooling := range rpmCooling {
+			log.Printf("Fan %s - %s RPM - %s\n", cooling["number"], cooling["rpm"], cooling["status"])
+		}
+
+		for _, cpu := range usageCPU {
+			log.Printf("CPU usage 5s %s%%, 1m %s%%, 5m %s%%\n", cpu["cpu_5s"], cpu["cpu_1m"], cpu["cpu_5m"])
+		}
+
+		for _, memory := range usageMemory {
+			freeMem, _ := strconv.ParseFloat(memory["free_memory"], 64)
+			log.Printf("Free memory %.2fMB %s%%\n", freeMem/math.Pow(1024, 2), memory["percent_free_memory"])
 		}
 	}
 
-	// If slice length is less than 2 rows response is not comprehensive
-	respStatus = tmp
-	if len(respStatus) < 2 {
-		return fmt.Errorf("error parsing Cisco interface respStatus response empty response")
+	if message == "" {
+		message = "Everything is Ok"
 	}
-
-	// Interfaces response is a fixed size column array => finding position end size of each columns based of Header
-	re := regexp.MustCompile(`(?i)(?P<Port>Port\s+)(?P<Name>Name\s+)(?P<status>status\s+)(?P<Vlan>Vlan\s+)(?P<Duplex>Duplex\s+)(?P<Speed>Speed\s+)(?P<Type>Type\s?)`)
-	reSplit := regexp.MustCompile(`\s+`)
-	borders := re.FindStringSubmatchIndex(respStatus[0])
-
-	if borders == nil || len(borders) != 16 {
-		return fmt.Errorf("error parsing Cisco interface header not found in response")
-	}
-
-	// converting string to structured data
-	for _, s := range respStatus[1:] {
-		item := ict.SwitchInterfaceStatus{}
-		item.Port = strings.Trim(s[borders[2]:borders[3]], " \r")
-		item.Name = strings.Trim(s[borders[4]:borders[5]], " \r")
-		item.Status = strings.Trim(s[borders[6]:borders[7]], " \r")
-
-		// For Cisco 2960X output, Duplex and speed are right justified
-		vds := reSplit.Split(strings.Trim(s[borders[8]:borders[13]], " \r"), -1) //Vlan-Duplex-Speed
-		if len(vds) != 3 {
-			return fmt.Errorf("error parsing Vlan/Duplex/Speed in Cisco interface respStatus")
-		}
-		item.Vlan = strings.Trim(vds[0], " \r")
-		item.Duplex = strings.Trim(vds[1], " \r")
-		item.Speed = strings.Trim(vds[2], " \r")
-
-		item.Type = strings.Trim(s[borders[14]:], " \r")
-		cSwitchStatus.SwStatus = append(cSwitchStatus.SwStatus, item)
-	}
-
-	return nil
-}
-
-// ReturnIcingaResult convert
-func (cSwitchStatus *CiscoASAStatus) ReturnIcingaResult() ict.Icinga {
-	// Counter for metric
-	var up, down, exception, all int
-
-	// Initialize default Icinga status
-	icinga := ict.Icinga{Message: ict.UnkMsg, Exit: ict.UnkExit, Metric: ""}
-
-	// Analyze each interface status - worst status give global status
-	var tmpMsg string
-	for _, item := range cSwitchStatus.SwStatus {
-		tmpMsg = ""
-		switch getStatusCondition(item) {
-		case ict.OkExit:
-			if icinga.Exit == ict.UnkExit {
-				icinga.Exit = ict.OkExit
-			}
-			if Disabled.MatchString(item.Status) {
-				tmpMsg = item.Port + " Info[" + item.Status + "]"
-			}
-		case ict.WarExit:
-			if icinga.Exit != ict.CriExit {
-				icinga.Exit = ict.WarExit
-			}
-			tmpMsg = item.Port + " Warning[" + item.Status + "]"
-		case ict.CriExit:
-			icinga.Exit = ict.CriExit
-			tmpMsg = item.Port + " Critical[" + item.Status + "]"
-		default:
-			if icinga.Exit != ict.CriExit && icinga.Exit != ict.WarExit {
-				icinga.Exit = ict.UnkExit
-			}
-			tmpMsg = item.Port + " Unknown[" + item.Status + "]"
-		}
-		if icinga.Message == ict.UnkMsg || icinga.Message == "" {
-			icinga.Message = tmpMsg
-		} else {
-			if tmpMsg != "" {
-				icinga.Message += " / " + tmpMsg
-			}
-		}
-		switch getMetricCondition(item) {
-		case Up:
-			up++
-		case Down:
-			down++
-		default:
-			exception++
-		}
-	}
-
-	all = up + down + exception
-	icinga.Metric = fmt.Sprintf("'Exception'=%d;;;0;%d 'Up'=%d;;;0;%d 'Down'=%d;;;0;%d", exception, all, up, all, down, all)
-
-	// Everything is ok and no messages is set just say that
-	if icinga.Message == "" {
-		icinga.Message = "All is Ok..."
-	}
-
-	return icinga
-}
-
-// Status return SwitchInterfaceStatusArray
-func (cSwitchStatus *CiscoASAStatus) Status() []ict.SwitchInterfaceStatus {
-	return cSwitchStatus.SwStatus
+	return ict.Icinga{Message: message, Exit: condition, Metric: metrics}, err
 }
