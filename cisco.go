@@ -3,6 +3,7 @@
 package main
 
 import (
+	"encoding/json"
 	"fmt"
 	"math"
 	"strings"
@@ -56,6 +57,11 @@ func NewCiscoASA(name string) *CiscoASA {
 // CheckStatus check Cisco ASA environment conditions
 func (asa *CiscoASA) CheckStatus(host string, username string, password string, identity string, port int, critical string, warning string) (ict.Icinga, error) {
 
+	type Threshold struct {
+		CPU    []int `json:"cpu,omitempty"`
+		Memory int   `json:"memory,omitempty"`
+	}
+
 	var ssh *ict.SSHTools
 
 	var reCooling = regexp.MustCompile(`(?mi)^\s*cooling Fan\s+(?P<number>\d+)\s*:\s+(?P<rpm>\d+)\s+RPM\s+-\s+(?P<status>.+)$`)
@@ -63,7 +69,9 @@ func (asa *CiscoASA) CheckStatus(host string, username string, password string, 
 	var reAmbient = regexp.MustCompile(`(?mi)^\s*Ambient\s+(?P<number>\d+):\s*(?P<temp>\d+\.\d)\s+C\s+-\s+(?P<status>.*)\s+\((?P<name>.*)\)\s*$`)
 	var reCPU = regexp.MustCompile(`(?mi)^CPU utilization for.*=\s*(?P<cpu_5s>\d*)%;.*:\s*(?P<cpu_1m>\d*)%;.*:\s*(?P<cpu_5m>\d*)%\s*$`)
 	var reMem = regexp.MustCompile(`(?mi)^Free memory:\s+(?P<free_memory>\d+).+\((?P<percent_free_memory>\d*)%\)\s*$`)
-	var reThreshold = regexp.MustCompile(`(\d*)[,|;](\d*)[,|;](\d*).*`)
+
+	var warningTH Threshold
+	var criticalTH Threshold
 
 	// Opening a ssh session to the cisco ASA
 	ssh, err = ict.NewSSHTools(host, username, password, identity, port)
@@ -166,34 +174,32 @@ func (asa *CiscoASA) CheckStatus(host string, username string, password string, 
 		metrics += fmt.Sprintf("'CPU %s [°C]'=%s ", cpu["number"], cpu["temp"])
 	}
 
+	// Converting critical and warning threshold  JSON strings to Structured data
+	errCritical := json.Unmarshal([]byte(critical), &criticalTH)
+	errWarning := json.Unmarshal([]byte(warning), &warningTH)
+
 	for _, cpu := range usageCPU {
 		// Updating global status
-		criticalThreshold := reThreshold.FindStringSubmatch(critical)
-		warningThreshold := reThreshold.FindStringSubmatch(warning)
 		cpu5s, _ := strconv.Atoi(cpu["cpu_5s"])
 		cpu1m, _ := strconv.Atoi(cpu["cpu_1m"])
 		cpu5m, _ := strconv.Atoi(cpu["cpu_5m"])
 
-		if criticalThreshold != nil {
-			cpu5sTH, _ := strconv.Atoi(criticalThreshold[1])
-			cpu1mTH, _ := strconv.Atoi(criticalThreshold[2])
-			cpu5mTH, _ := strconv.Atoi(criticalThreshold[3])
-
-			if cpu5s > cpu5sTH {
+		if errCritical == nil {
+			if cpu5s > criticalTH.CPU[0] {
 				condition = ict.CriExit
 				if message != "" {
 					message += "/"
 				}
 				message += fmt.Sprintf("5s CPU usage > %d%%", cpu5s)
 			}
-			if cpu1m > cpu1mTH {
+			if cpu1m > criticalTH.CPU[1] {
 				condition = ict.CriExit
 				if message != "" {
 					message += "/"
 				}
 				message += fmt.Sprintf("1m CPU usage > %d%%", cpu1m)
 			}
-			if cpu5m > cpu5mTH {
+			if cpu5m > criticalTH.CPU[2] {
 				condition = ict.CriExit
 				if message != "" {
 					message += "/"
@@ -202,26 +208,22 @@ func (asa *CiscoASA) CheckStatus(host string, username string, password string, 
 			}
 		}
 
-		if warningThreshold != nil {
-			cpu5sTH, _ := strconv.Atoi(warningThreshold[1])
-			cpu1mTH, _ := strconv.Atoi(warningThreshold[2])
-			cpu5mTH, _ := strconv.Atoi(warningThreshold[3])
-
-			if cpu5s > cpu5sTH && condition < ict.WarExit {
+		if errWarning == nil {
+			if cpu5s > warningTH.CPU[0] && condition < ict.WarExit {
 				condition = ict.WarExit
 				if message != "" {
 					message += "/"
 				}
 				message += fmt.Sprintf("5s CPU usage > %d%%", cpu5s)
 			}
-			if cpu1m > cpu1mTH && condition < ict.WarExit {
+			if cpu1m > warningTH.CPU[1] && condition < ict.WarExit {
 				condition = ict.WarExit
 				if message != "" {
 					message += "/"
 				}
 				message += fmt.Sprintf("1m CPU usage > %d%%", cpu1m)
 			}
-			if cpu5m > cpu5mTH && condition < ict.WarExit {
+			if cpu5m > warningTH.CPU[2] && condition < ict.WarExit {
 				condition = ict.WarExit
 				if message != "" {
 					message += "/"
@@ -249,17 +251,37 @@ func (asa *CiscoASA) CheckStatus(host string, username string, password string, 
 	}
 
 	for _, memory := range usageMemory {
+		freeMem, _ := strconv.ParseFloat(memory["free_memory"], 64)
+		percFreeMem, _ := strconv.Atoi(memory["percent_free_memory"])
+
 		// Updating global status
-		//TODO:Memory updating status depending threshold
+		if errCritical == nil {
+			if percFreeMem < criticalTH.Memory {
+				condition = ict.CriExit
+				if message != "" {
+					message += "/"
+				}
+				message += fmt.Sprintf("Free memory %d%% lower than %d%%", percFreeMem, criticalTH.Memory)
+			}
+		}
+
+		if errWarning == nil {
+			if percFreeMem < warningTH.Memory && condition < ict.WarExit {
+				condition = ict.WarExit
+				if message != "" {
+					message += "/"
+				}
+				message += fmt.Sprintf("Free memory %d%% lower than %d%%", percFreeMem, criticalTH.Memory)
+			}
+		}
 
 		// Setting CPU usage metrics
-		metrics += fmt.Sprintf("'Free memory [%%]'=%s%% ", memory["percent_free_memory"])
-		freeMem, _ := strconv.ParseFloat(memory["free_memory"], 64)
+		metrics += fmt.Sprintf("'Free memory [%%]'=%d%% ", percFreeMem)
 		metrics += fmt.Sprintf("'Free memory [MB]'=%.2fMB ", freeMem/math.Pow(1024, 2))
 	}
 
 	// Print log values if program is called in Test mode
-	if os.Getenv("CHECK_MODE") == "TEST" {
+	if os.Getenv("VERBOSE") == "TRUE" {
 		for _, ambient := range tempAmbient {
 			log.Printf("%s - %s°C - %s.", ambient["name"], ambient["temp"], strings.TrimSpace(ambient["status"]))
 		}
@@ -278,6 +300,86 @@ func (asa *CiscoASA) CheckStatus(host string, username string, password string, 
 		for _, memory := range usageMemory {
 			freeMem, _ := strconv.ParseFloat(memory["free_memory"], 64)
 			log.Printf("Free memory %.2fMB %s%%\n", freeMem/math.Pow(1024, 2), memory["percent_free_memory"])
+		}
+	}
+
+	if message == "" {
+		message = "Everything is Ok"
+	}
+	return ict.Icinga{Message: message, Exit: condition, Metric: metrics}, err
+}
+
+func (asa *CiscoASA) CheckVPNUsers(host string, username string, password string, identity string, port int, critical string, warning string) (ict.Icinga, error) {
+
+	var ssh *ict.SSHTools
+
+	var reUsers = regexp.MustCompile(`(?mi)^remote access VPN user.*\'(?P<username>.*)\'.*$`)
+
+	// Opening a ssh session to the cisco ASA
+	ssh, err = ict.NewSSHTools(host, username, password, identity, port)
+	if err != nil {
+		return ict.Icinga{}, err
+	}
+
+	// Sending commands to the Cisco ASA and getting returned data
+	err = ssh.SendSSHhasPTY([]string{"enable\n\n", "terminal pager 0\n", "show uauth | include remote\n"}, `(?i)^(.*\>.?)|(.*\#.?)|(Password:.?)$`)
+	if err != nil {
+		return ict.Icinga{}, err
+	}
+
+	//
+	// Parsing returned data
+	//
+	// Creating map for free memory information
+	keys := reUsers.SubexpNames()[1:]
+	var users []map[string]string
+	for _, s := range reUsers.FindAllStringSubmatch(ssh.Stdout, -1) {
+		user := make(map[string]string)
+		for i, v := range s[1:] {
+			user[keys[i]] = v
+		}
+		users = append(users, user)
+	}
+
+	// Set exit condition depending status of all probes
+	var condition int = ict.OkExit
+	var message string = ""
+	var metrics string = ""
+
+	for _, memory := range usageMemory {
+		freeMem, _ := strconv.ParseFloat(memory["free_memory"], 64)
+		percFreeMem, _ := strconv.Atoi(memory["percent_free_memory"])
+
+		// Updating global status
+		if errCritical == nil {
+			if percFreeMem < criticalTH.Memory {
+				condition = ict.CriExit
+				if message != "" {
+					message += "/"
+				}
+				message += fmt.Sprintf("Free memory %d%% lower than %d%%", percFreeMem, criticalTH.Memory)
+			}
+		}
+
+		if errWarning == nil {
+			if percFreeMem < warningTH.Memory && condition < ict.WarExit {
+				condition = ict.WarExit
+				if message != "" {
+					message += "/"
+				}
+				message += fmt.Sprintf("Free memory %d%% lower than %d%%", percFreeMem, criticalTH.Memory)
+			}
+		}
+
+		// Setting CPU usage metrics
+		metrics += fmt.Sprintf("'Free memory [%%]'=%d%% ", percFreeMem)
+		metrics += fmt.Sprintf("'Free memory [MB]'=%.2fMB ", freeMem/math.Pow(1024, 2))
+	}
+
+	// Print log values if program is called in Test mode
+	if os.Getenv("VERBOSE") == "TRUE" {
+		for idx, user := range users {
+			log.Printf("%d - %s", idx, user["username"])
 		}
 	}
 

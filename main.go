@@ -41,8 +41,8 @@ func init() {
 Check CISCO ASA status
 Usage: 
 	check_ciscoasa (-h | --help | --version)
-	check_ciscoasa failover | uauth (-H <host> | --host=<host>) (-u <username> | --username=<username>) [-p <password> | --password=<password> | -i <pkey_file> | --identity=<pkey_file] [-P <port> | --port=<port>] 
-	check_ciscoasa status (-H <host> | --host=<host>) (-u <username> | --username=<username>) (-c <critical> | --critical=<critical>) (-w <warning> | --warning=<warning>) [-p <password> | --password=<password> | -i <pkey_file> | --identity=<pkey_file] [-P <port> | --port=<port>] 
+	check_ciscoasa failover | vpnusers (-H <host> | --host=<host>) (-u <username> | --username=<username>) [-p <password> | --password=<password> | -i <pkey_file> | --identity=<pkey_file] [-P <port> | --port=<port>] [--verbose] 
+	check_ciscoasa status (-H <host> | --host=<host>) (-u <username> | --username=<username>) (-c <critical> | --critical=<critical>) (-w <warning> | --warning=<warning>) [-p <password> | --password=<password> | -i <pkey_file> | --identity=<pkey_file] [-P <port> | --port=<port>] [--verbose] 
 Options:
 	--version  				Show check_ciscoasa version.
 	-h --help  				Show this screen.
@@ -52,8 +52,8 @@ Options:
 	-p <password> --password=<password>  	Password
 	-i <pkey_file> --identity=<pkey_file>  	Private key file [default: ~/.ssh/id_rsa]
 	-P <port> --port=<port>  		Port number [default: 22]
-	-c <critical> --critical=<critical>		% CPU usage critical threshold {5s;1m;5m}
-	-w <warning> --warning=<warning>		% CPU usage critical threshold {5s;1m;5m}
+	-c <critical> --critical=<critical>		Critical threshold in JSON format example {"cpu":[90;70;50],"free_memory":50} 
+	-w <warning> --warning=<warning>		Warning threshold in JSON format example {"cpu":[70;50;30],"free_memory":50}
 
 `
 	// Don't parse command line argument for testing argument must be passed with OS environment variable
@@ -92,6 +92,9 @@ Options:
 		params.password, _ = arguments.String("--password")
 		params.identity, _ = arguments.String("--identity")
 		params.verbose, _ = arguments.Bool("--verbose")
+		if params.verbose {
+			os.Setenv("VERBOSE", "TRUE")
+		}
 		params.critical, _ = arguments.String("--critical")
 		params.warning, _ = arguments.String("--warning")
 	}
