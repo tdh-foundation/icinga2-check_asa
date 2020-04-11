@@ -17,34 +17,14 @@ import (
 	//"strings"
 )
 
-//noinspection ALL
-const (
-	Up        = 1
-	Down      = 0
-	Exception = -1
-)
-
-var (
-	Connected    = regexp.MustCompile(`(?i)^connected$`)
-	NotConnected = regexp.MustCompile(`(?i)^notconnect?$`)
-	Disabled     = regexp.MustCompile(`(?i)^disabled$`)
-	ErrDisabled  = regexp.MustCompile(`(?i)^err-dis[a-zA-Z]+$`)
-	XcrvrAbsen   = regexp.MustCompile(`(?i)^xcvrabsen$`)
-	NoOperMem    = regexp.MustCompile(`(?i)^noOpermem$`)
-	DownStatus   = regexp.MustCompile(`(?i)^down$`)
-
-	// Status condtions
-	OkCondition  = []*regexp.Regexp{Connected, NotConnected, Disabled, DownStatus, XcrvrAbsen}
-	CriCondition = []*regexp.Regexp{ErrDisabled}
-	WarCondition = []*regexp.Regexp{NoOperMem}
-
-	// Metric conditions
-	UpCondition   = []*regexp.Regexp{Connected}
-	DownCondition = []*regexp.Regexp{NotConnected, Disabled, DownStatus, XcrvrAbsen}
-)
-
 type CiscoASA struct {
 	Name string
+}
+
+type Threshold struct {
+	CPU      []int `json:"cpu,omitempty"`
+	Memory   int   `json:"memory,omitempty"`
+	UsersVPN int   `json:"users_vpn,omitempty"`
 }
 
 // Instantiate a new CiscoASA
@@ -56,11 +36,6 @@ func NewCiscoASA(name string) *CiscoASA {
 
 // CheckStatus check Cisco ASA environment conditions
 func (asa *CiscoASA) CheckStatus(host string, username string, password string, identity string, port int, critical string, warning string) (ict.Icinga, error) {
-
-	type Threshold struct {
-		CPU    []int `json:"cpu,omitempty"`
-		Memory int   `json:"memory,omitempty"`
-	}
 
 	var ssh *ict.SSHTools
 
@@ -184,7 +159,7 @@ func (asa *CiscoASA) CheckStatus(host string, username string, password string, 
 		cpu1m, _ := strconv.Atoi(cpu["cpu_1m"])
 		cpu5m, _ := strconv.Atoi(cpu["cpu_5m"])
 
-		if errCritical == nil {
+		if errCritical == nil && criticalTH.CPU != nil && len(criticalTH.CPU) == 3 {
 			if cpu5s > criticalTH.CPU[0] {
 				condition = ict.CriExit
 				if message != "" {
@@ -208,7 +183,7 @@ func (asa *CiscoASA) CheckStatus(host string, username string, password string, 
 			}
 		}
 
-		if errWarning == nil {
+		if errWarning == nil && warningTH.CPU != nil && len(warningTH.CPU) == 3 {
 			if cpu5s > warningTH.CPU[0] && condition < ict.WarExit {
 				condition = ict.WarExit
 				if message != "" {
@@ -255,7 +230,7 @@ func (asa *CiscoASA) CheckStatus(host string, username string, password string, 
 		percFreeMem, _ := strconv.Atoi(memory["percent_free_memory"])
 
 		// Updating global status
-		if errCritical == nil {
+		if errCritical == nil && criticalTH.Memory > 0 {
 			if percFreeMem < criticalTH.Memory {
 				condition = ict.CriExit
 				if message != "" {
@@ -265,7 +240,7 @@ func (asa *CiscoASA) CheckStatus(host string, username string, password string, 
 			}
 		}
 
-		if errWarning == nil {
+		if errWarning == nil && criticalTH.Memory > 0 {
 			if percFreeMem < warningTH.Memory && condition < ict.WarExit {
 				condition = ict.WarExit
 				if message != "" {
@@ -315,6 +290,9 @@ func (asa *CiscoASA) CheckVPNUsers(host string, username string, password string
 
 	var reUsers = regexp.MustCompile(`(?mi)^remote access VPN user.*\'(?P<username>.*)\'.*$`)
 
+	var warningTH Threshold
+	var criticalTH Threshold
+
 	// Opening a ssh session to the cisco ASA
 	ssh, err = ict.NewSSHTools(host, username, password, identity, port)
 	if err != nil {
@@ -322,7 +300,7 @@ func (asa *CiscoASA) CheckVPNUsers(host string, username string, password string
 	}
 
 	// Sending commands to the Cisco ASA and getting returned data
-	err = ssh.SendSSHhasPTY([]string{"enable\n\n", "terminal pager 0\n", "show uauth | include remote\n"}, `(?i)^(.*\>.?)|(.*\#.?)|(Password:.?)$`)
+	err = ssh.SendSSHhasPTY([]string{"enable\n\n", "terminal pager 0\n", "show uauth | include remote access VPN user\n"}, `(?i)^(.*\>.?)|(.*\#.?)|(Password:.?)$`)
 	if err != nil {
 		return ict.Icinga{}, err
 	}
@@ -330,7 +308,7 @@ func (asa *CiscoASA) CheckVPNUsers(host string, username string, password string
 	//
 	// Parsing returned data
 	//
-	// Creating map for free memory information
+	// Creating map for users information information
 	keys := reUsers.SubexpNames()[1:]
 	var users []map[string]string
 	for _, s := range reUsers.FindAllStringSubmatch(ssh.Stdout, -1) {
@@ -346,35 +324,26 @@ func (asa *CiscoASA) CheckVPNUsers(host string, username string, password string
 	var message string = ""
 	var metrics string = ""
 
-	for _, memory := range usageMemory {
-		freeMem, _ := strconv.ParseFloat(memory["free_memory"], 64)
-		percFreeMem, _ := strconv.Atoi(memory["percent_free_memory"])
+	// Converting critical and warning threshold  JSON strings to Structured data
+	errCritical := json.Unmarshal([]byte(critical), &criticalTH)
+	errWarning := json.Unmarshal([]byte(warning), &warningTH)
 
-		// Updating global status
-		if errCritical == nil {
-			if percFreeMem < criticalTH.Memory {
-				condition = ict.CriExit
-				if message != "" {
-					message += "/"
-				}
-				message += fmt.Sprintf("Free memory %d%% lower than %d%%", percFreeMem, criticalTH.Memory)
-			}
+	if errWarning == nil && warningTH.UsersVPN > 0 {
+		if len(users) > warningTH.UsersVPN {
+			condition = ict.WarExit
+			message = fmt.Sprintf("%d VPN remote connected users > %d", len(users), warningTH.UsersVPN)
 		}
-
-		if errWarning == nil {
-			if percFreeMem < warningTH.Memory && condition < ict.WarExit {
-				condition = ict.WarExit
-				if message != "" {
-					message += "/"
-				}
-				message += fmt.Sprintf("Free memory %d%% lower than %d%%", percFreeMem, criticalTH.Memory)
-			}
-		}
-
-		// Setting CPU usage metrics
-		metrics += fmt.Sprintf("'Free memory [%%]'=%d%% ", percFreeMem)
-		metrics += fmt.Sprintf("'Free memory [MB]'=%.2fMB ", freeMem/math.Pow(1024, 2))
 	}
+
+	if errCritical == nil && criticalTH.UsersVPN > 0 {
+		if len(users) > criticalTH.UsersVPN {
+			condition = ict.CriExit
+			message = fmt.Sprintf("%d VPN remote connected users > %d", len(users), criticalTH.UsersVPN)
+		}
+	}
+
+	// Setting CPU usage metrics
+	metrics += fmt.Sprintf("'Active users'=%d ", len(users))
 
 	// Print log values if program is called in Test mode
 	if os.Getenv("VERBOSE") == "TRUE" {
@@ -384,7 +353,82 @@ func (asa *CiscoASA) CheckVPNUsers(host string, username string, password string
 	}
 
 	if message == "" {
-		message = "Everything is Ok"
+		message = fmt.Sprintf("%d VPN remote connected users", len(users))
+	}
+	return ict.Icinga{Message: message, Exit: condition, Metric: metrics}, err
+}
+
+func (asa *CiscoASA) CheckFailover(host string, username string, password string, identity string, port int, critical string, warning string) (ict.Icinga, error) {
+
+	var ssh *ict.SSHTools
+	var reFailoverOn = regexp.MustCompile(`(?mi)^Failover (?P<status>.*)\s*$`)
+	var reFailoverLink = regexp.MustCompile(`(?mi)^Failover LAN Interface:.*\((?P<failover_state>.*)\)\s*$`)
+	/*
+		var reLastFailover = regexp.MustCompile(`(?mi)^Last Failover at:\s(?P<time>\d{2}:\d{2}:\d{2}\s[A-Z]{1,3}[T]\s\w{3}\s\d{1,2}\s\d{4})\s*$`)
+		var reThisHost = regexp.MustCompile(`(?mi)^\s*This host:\s(?P<host>\w*)\s*\-\s*(?P<state>.*)\s\s*$`)
+		var reOtherHost = regexp.MustCompile(`(?mi)^\s*This host:\s(?P<host>\w*)\s*\-\s*(?P<state>.*)\s\s*$`)
+		var reActiveTime = regexp.MustCompile(`(?mi)^\s*Active time:\s(?P<duration>\d*)\s*\(sec\)\s*$`)
+	*/
+	//var warningTH Threshold
+	//var criticalTH Threshold
+
+	// Set exit condition depending status of all probes
+	var condition int = ict.OkExit
+	var message string = ""
+	var metrics string = ""
+
+	// Opening a ssh session to the cisco ASA
+	ssh, err = ict.NewSSHTools(host, username, password, identity, port)
+	if err != nil {
+		return ict.Icinga{}, err
+	}
+
+	// Sending commands to the Cisco ASA and getting returned data
+	err = ssh.SendSSHhasPTY([]string{"enable\n\n", "terminal pager 0\n", "show failover\n"}, `(?i)^(.*\>.?)|(.*\#.?)|(Password:.?)$`)
+	if err != nil {
+		return ict.Icinga{}, err
+	}
+
+	//
+	// Parsing returned data
+	//
+
+	//Checking if Failover is On (First line of response)
+	failoverOn := reFailoverOn.FindStringSubmatch(ssh.Stdout)
+	if failoverOn != nil {
+		if strings.ToUpper(strings.TrimSpace(failoverOn[1])) != "ON" {
+			condition = ict.CriExit
+			message = "Failover status not On"
+		}
+	} else {
+		condition = ict.CriExit
+		message = "Failover status not found"
+	}
+	// If failover is not On or no information are returned exiting with Critical status
+	if condition == ict.CriExit {
+		return ict.Icinga{Message: message, Exit: condition, Metric: metrics}, err
+	}
+
+	//Checking if Failover link is Up
+	failoverLink := reFailoverLink.FindStringSubmatch(ssh.Stdout)
+	if failoverLink != nil {
+		if strings.ToUpper(strings.TrimSpace(failoverLink[1])) != "UP" {
+			condition = ict.CriExit
+			message += fmt.Sprintf("Failover LAN Interface status %s", strings.TrimSpace(failoverLink[1]))
+		}
+	} else {
+		condition = ict.CriExit
+		message = "Failover link information not found"
+		return ict.Icinga{Message: message, Exit: condition, Metric: metrics}, err
+	}
+
+	/*
+		// Converting critical and warning threshold  JSON strings to Structured data
+		errCritical := json.Unmarshal([]byte(critical), &criticalTH)
+		errWarning := json.Unmarshal([]byte(warning), &warningTH)
+	*/
+	if message == "" {
+		message = "Failover is up and running"
 	}
 	return ict.Icinga{Message: message, Exit: condition, Metric: metrics}, err
 }

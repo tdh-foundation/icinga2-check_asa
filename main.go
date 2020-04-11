@@ -41,8 +41,9 @@ func init() {
 Check CISCO ASA status
 Usage: 
 	check_ciscoasa (-h | --help | --version)
-	check_ciscoasa failover | vpnusers (-H <host> | --host=<host>) (-u <username> | --username=<username>) [-p <password> | --password=<password> | -i <pkey_file> | --identity=<pkey_file] [-P <port> | --port=<port>] [--verbose] 
 	check_ciscoasa status (-H <host> | --host=<host>) (-u <username> | --username=<username>) (-c <critical> | --critical=<critical>) (-w <warning> | --warning=<warning>) [-p <password> | --password=<password> | -i <pkey_file> | --identity=<pkey_file] [-P <port> | --port=<port>] [--verbose] 
+	check_ciscoasa vpnusers (-H <host> | --host=<host>) (-u <username> | --username=<username>) (-c <critical> | --critical=<critical>) (-w <warning> | --warning=<warning>) [-p <password> | --password=<password> | -i <pkey_file> | --identity=<pkey_file] [-P <port> | --port=<port>] [--verbose] 
+	check_ciscoasa failover (-H <host> | --host=<host>) (-u <username> | --username=<username>) [(-c <critical> | --critical=<critical>) (-w <warning> | --warning=<warning>)] [-p <password> | --password=<password> | -i <pkey_file> | --identity=<pkey_file] [-P <port> | --port=<port>] [--verbose] 
 Options:
 	--version  				Show check_ciscoasa version.
 	-h --help  				Show this screen.
@@ -52,10 +53,9 @@ Options:
 	-p <password> --password=<password>  	Password
 	-i <pkey_file> --identity=<pkey_file>  	Private key file [default: ~/.ssh/id_rsa]
 	-P <port> --port=<port>  		Port number [default: 22]
-	-c <critical> --critical=<critical>		Critical threshold in JSON format example {"cpu":[90;70;50],"free_memory":50} 
-	-w <warning> --warning=<warning>		Warning threshold in JSON format example {"cpu":[70;50;30],"free_memory":50}
+	-c <critical> --critical=<critical>		Critical threshold in JSON format example {"cpu":[90,70,50],"free_memory":50,"vpn_users":250,"failover_active":900} 
+	-w <warning> --warning=<warning>		Warning threshold in JSON format example {"cpu":[70,50,30],"free_memory":50,"vpn_users":200,"failover_active":1800}`
 
-`
 	// Don't parse command line argument for testing argument must be passed with OS environment variable
 	if os.Getenv("CHECK_MODE") == "TEST" {
 		params.version, _ = strconv.ParseBool(os.Getenv("VERSION"))
@@ -83,6 +83,12 @@ Options:
 
 		if c, _ := arguments.Bool("status"); c {
 			params.command = "status"
+		}
+		if c, _ := arguments.Bool("vpnusers"); c {
+			params.command = "vpnusers"
+		}
+		if c, _ := arguments.Bool("failover"); c {
+			params.command = "failover"
 		}
 
 		params.version, _ = arguments.Bool("--version")
@@ -118,7 +124,24 @@ func main() {
 	case "status":
 		icinga, err = asa.CheckStatus(params.host, params.username, params.password, params.identity, params.port, params.critical, params.warning)
 		if err != nil {
-			fmt.Printf("%s: Error CheckInterfaceStatus => %s", ict.CriMsg, err)
+			fmt.Printf("%s: Error CheckStatus => %s", ict.CriMsg, err)
+			os.Exit(ict.CriExit)
+		}
+		fmt.Println(icinga)
+		os.Exit(icinga.Exit)
+	case "vpnusers":
+		icinga, err = asa.CheckVPNUsers(params.host, params.username, params.password, params.identity, params.port, params.critical, params.warning)
+		if err != nil {
+			fmt.Printf("%s: Error CheckVPNUsers => %s", ict.CriMsg, err)
+			os.Exit(ict.CriExit)
+		}
+
+		fmt.Println(icinga)
+		os.Exit(icinga.Exit)
+	case "failover":
+		icinga, err = asa.CheckFailover(params.host, params.username, params.password, params.identity, params.port, params.critical, params.warning)
+		if err != nil {
+			fmt.Printf("%s: Error CheckFailover => %s", ict.CriMsg, err)
 			os.Exit(ict.CriExit)
 		}
 
