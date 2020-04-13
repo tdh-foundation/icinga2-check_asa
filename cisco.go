@@ -7,14 +7,13 @@ import (
 	"fmt"
 	"math"
 	"strings"
+	"time"
 
-	//"fmt"
 	ict "github.com/tdh-foundation/icinga2-go-checktools"
 	"log"
 	"os"
 	"regexp"
 	"strconv"
-	//"strings"
 )
 
 type CiscoASA struct {
@@ -22,9 +21,10 @@ type CiscoASA struct {
 }
 
 type Threshold struct {
-	CPU      []int `json:"cpu,omitempty"`
-	Memory   int   `json:"memory,omitempty"`
-	UsersVPN int   `json:"users_vpn,omitempty"`
+	CPU            []int `json:"cpu,omitempty"`
+	Memory         int   `json:"memory,omitempty"`
+	UsersVPN       int   `json:"users_vpn,omitempty"`
+	FailoverActive int   `json:"failover_active,omitempty"`
 }
 
 // Instantiate a new CiscoASA
@@ -363,14 +363,13 @@ func (asa *CiscoASA) CheckFailover(host string, username string, password string
 	var ssh *ict.SSHTools
 	var reFailoverOn = regexp.MustCompile(`(?mi)^Failover (?P<status>.*)\s*$`)
 	var reFailoverLink = regexp.MustCompile(`(?mi)^Failover LAN Interface:.*\((?P<failover_state>.*)\)\s*$`)
-	/*
-		var reLastFailover = regexp.MustCompile(`(?mi)^Last Failover at:\s(?P<time>\d{2}:\d{2}:\d{2}\s[A-Z]{1,3}[T]\s\w{3}\s\d{1,2}\s\d{4})\s*$`)
-		var reThisHost = regexp.MustCompile(`(?mi)^\s*This host:\s(?P<host>\w*)\s*\-\s*(?P<state>.*)\s\s*$`)
-		var reOtherHost = regexp.MustCompile(`(?mi)^\s*This host:\s(?P<host>\w*)\s*\-\s*(?P<state>.*)\s\s*$`)
-		var reActiveTime = regexp.MustCompile(`(?mi)^\s*Active time:\s(?P<duration>\d*)\s*\(sec\)\s*$`)
-	*/
-	//var warningTH Threshold
-	//var criticalTH Threshold
+	var reLastFailover = regexp.MustCompile(`(?mi)^Last Failover at:\s(?P<time>\d{2}:\d{2}:\d{2}\s[A-Z]{1,3}[T]\s\w{3}\s\d{1,2}\s\d{4})\s*$`)
+	var reThisHost = regexp.MustCompile(`(?mi)^\s*This host:\s(?P<host>\w*)\s*\-\s*(?P<state>.*)\s\s*$`)
+	var reOtherHost = regexp.MustCompile(`(?mi)^\s*Other host:\s(?P<host>\w*)\s*\-\s*(?P<state>.*)\s\s*$`)
+	var reActiveTime = regexp.MustCompile(`(?mi)^\s*Active time:\s(?P<duration>\d*)\s*\(sec\)\s*$`)
+
+	var warningTH Threshold
+	var criticalTH Threshold
 
 	// Set exit condition depending status of all probes
 	var condition int = ict.OkExit
@@ -422,13 +421,87 @@ func (asa *CiscoASA) CheckFailover(host string, username string, password string
 		return ict.Icinga{Message: message, Exit: condition, Metric: metrics}, err
 	}
 
-	/*
-		// Converting critical and warning threshold  JSON strings to Structured data
-		errCritical := json.Unmarshal([]byte(critical), &criticalTH)
-		errWarning := json.Unmarshal([]byte(warning), &warningTH)
-	*/
-	if message == "" {
-		message = "Failover is up and running"
+	// Checking last failover and parsing datetime
+	lastFailover := reLastFailover.FindStringSubmatch(ssh.Stdout)
+	if lastFailover != nil {
+		lastFailoverTime, err := time.Parse("15:04:05 MST Jan 2 2006", lastFailover[1])
+		if err == nil {
+			if message != "" {
+				message += " / "
+			}
+			message += fmt.Sprintf("Last failover -> %s", lastFailoverTime.Format("02 January 2006 15:04:05"))
+		}
 	}
+
+	// Converting critical and warning threshold  JSON strings to Structured data
+	errCritical := json.Unmarshal([]byte(critical), &criticalTH)
+	errWarning := json.Unmarshal([]byte(warning), &warningTH)
+
+	thisHost := reThisHost.FindStringSubmatch(ssh.Stdout)
+	otherHost := reOtherHost.FindStringSubmatch(ssh.Stdout)
+	activeTime := reActiveTime.FindAllStringSubmatch(ssh.Stdout, 2)
+
+	// Testing which host is active and active duration if duration is lower than threshold raising Warning or Critical exit condition
+	if thisHost != nil && otherHost != nil {
+		if strings.TrimSpace(thisHost[2]) == "Active" {
+			at, err := strconv.Atoi(activeTime[0][1])
+			if err != nil {
+				if message != "" {
+					message += " / "
+				}
+				condition = ict.UnkExit
+				message += fmt.Sprintf("Invalid Active time %s", activeTime[0][1])
+			}
+			if errWarning == nil && at < warningTH.FailoverActive && condition < ict.WarExit {
+				if message != "" {
+					message += " / "
+				}
+				condition = ict.WarExit
+				message += fmt.Sprintf("Active unit since %d (s) < %d", at, warningTH.FailoverActive)
+			}
+			if errCritical == nil && at < criticalTH.FailoverActive {
+				if message != "" {
+					message += " / "
+				}
+				condition = ict.CriExit
+				message += fmt.Sprintf("Active unit since %d (s) < %d", at, criticalTH.FailoverActive)
+			}
+		} else if strings.TrimSpace(otherHost[2]) == "Active" {
+			at, err := strconv.Atoi(activeTime[1][1])
+			if err != nil {
+				if message != "" {
+					message += " / "
+				}
+				condition = ict.UnkExit
+				message += fmt.Sprintf("Invalid Active time %s", activeTime[1][1])
+			}
+			if errWarning == nil && at < warningTH.FailoverActive && condition < ict.WarExit {
+				if message != "" {
+					message += " / "
+				}
+				condition = ict.WarExit
+				message += fmt.Sprintf("Active unit since %d (s) < %d", at, warningTH.FailoverActive)
+			}
+			if errCritical == nil && at < criticalTH.FailoverActive {
+				if message != "" {
+					message += " / "
+				}
+				condition = ict.CriExit
+				message += fmt.Sprintf("Active unit since %d (s) < %d", at, criticalTH.FailoverActive)
+			}
+		} else {
+			if message != "" {
+				message += " / "
+			}
+			condition = ict.CriExit
+			message += "No active host (not possible)!!!"
+		}
+		if message != "" {
+			message += " / "
+		}
+		message += fmt.Sprintf("%s host is %s, %s host is %s", thisHost[1], thisHost[2], otherHost[1], otherHost[2])
+
+	}
+
 	return ict.Icinga{Message: message, Exit: condition, Metric: metrics}, err
 }
