@@ -119,9 +119,9 @@ func (asa *CiscoASA) CheckStatus(host string, username string, password string, 
 	}
 
 	// Set exit condition depending status of all probes
-	var condition int = ict.OkExit
-	var message string = ""
-	var metrics string = ""
+	var condition = ict.OkExit
+	var message = ""
+	var metrics = ""
 
 	for _, ambient := range tempAmbient {
 		// Updating global status
@@ -251,7 +251,7 @@ func (asa *CiscoASA) CheckStatus(host string, username string, password string, 
 		}
 
 		// Setting CPU usage metrics
-		metrics += fmt.Sprintf("'Free memory [%%]'=%d%% ", percFreeMem)
+		metrics += fmt.Sprintf("'Free memory'=%d%% ", percFreeMem)
 		metrics += fmt.Sprintf("'Free memory [GB]'=%.3fGB ", freeMem/math.Pow(1024, 3))
 	}
 
@@ -320,9 +320,9 @@ func (asa *CiscoASA) CheckVPNUsers(host string, username string, password string
 	}
 
 	// Set exit condition depending status of all probes
-	var condition int = ict.OkExit
-	var message string = ""
-	var metrics string = ""
+	var condition = ict.OkExit
+	var message = ""
+	var metrics = ""
 
 	// Converting critical and warning threshold  JSON strings to Structured data
 	errCritical := json.Unmarshal([]byte(critical), &criticalTH)
@@ -372,9 +372,9 @@ func (asa *CiscoASA) CheckFailover(host string, username string, password string
 	var criticalTH Threshold
 
 	// Set exit condition depending status of all probes
-	var condition int = ict.OkExit
-	var message string = ""
-	var metrics string = ""
+	var condition = ict.OkExit
+	var message = ""
+	var metrics = ""
 
 	// Opening a ssh session to the cisco ASA
 	ssh, err = ict.NewSSHTools(host, username, password, identity, port)
@@ -466,6 +466,7 @@ func (asa *CiscoASA) CheckFailover(host string, username string, password string
 				condition = ict.CriExit
 				message += fmt.Sprintf("Active unit since %d (s) < %d", at, criticalTH.FailoverActive)
 			}
+			metrics = fmt.Sprintf("'Active Time'=%ds ", at)
 		} else if strings.TrimSpace(otherHost[2]) == "Active" {
 			at, err := strconv.Atoi(activeTime[1][1])
 			if err != nil {
@@ -489,6 +490,7 @@ func (asa *CiscoASA) CheckFailover(host string, username string, password string
 				condition = ict.CriExit
 				message += fmt.Sprintf("Active unit since %d (s) < %d", at, criticalTH.FailoverActive)
 			}
+			metrics = "'Active Time'=0s "
 		} else {
 			if message != "" {
 				message += " / "
@@ -500,7 +502,6 @@ func (asa *CiscoASA) CheckFailover(host string, username string, password string
 			message += " / "
 		}
 		message += fmt.Sprintf("%s host is %s, %s host is %s", thisHost[1], thisHost[2], otherHost[1], otherHost[2])
-
 	}
 
 	return ict.Icinga{Message: message, Exit: condition, Metric: metrics}, err
