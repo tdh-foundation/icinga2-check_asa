@@ -133,7 +133,7 @@ func (asa *CiscoASA) CheckStatus(host string, username string, password string, 
 			message += fmt.Sprintf("Ambient %s temperature issue %s (%s °C)", ambient["name"], ambient["status"], ambient["temp"])
 		}
 		// Setting metrics
-		metrics += fmt.Sprintf("'%s [°C]'=%s ", ambient["name"], ambient["temp"])
+		metrics += fmt.Sprintf("'%s [C]'=%s ", ambient["name"], ambient["temp"])
 	}
 
 	for _, cpu := range tempCPU {
@@ -146,7 +146,7 @@ func (asa *CiscoASA) CheckStatus(host string, username string, password string, 
 			message += fmt.Sprintf("CPU %s temperature issue %s (%s °C)", cpu["number"], cpu["status"], cpu["temp"])
 		}
 		// Setting metrics
-		metrics += fmt.Sprintf("'CPU %s [°C]'=%s ", cpu["number"], cpu["temp"])
+		metrics += fmt.Sprintf("'CPU %s Temperature [C]'=%s ", cpu["number"], cpu["temp"])
 	}
 
 	// Converting critical and warning threshold  JSON strings to Structured data
@@ -252,7 +252,7 @@ func (asa *CiscoASA) CheckStatus(host string, username string, password string, 
 
 		// Setting CPU usage metrics
 		metrics += fmt.Sprintf("'Free memory [%%]'=%d%% ", percFreeMem)
-		metrics += fmt.Sprintf("'Free memory [MB]'=%.2fMB ", freeMem/math.Pow(1024, 2))
+		metrics += fmt.Sprintf("'Free memory [GB]'=%.3fGB ", freeMem/math.Pow(1024, 3))
 	}
 
 	// Print log values if program is called in Test mode

@@ -11,7 +11,7 @@ import (
 )
 
 // version of program
-const version = "1.0.0"
+const version = "1.0.1"
 
 var (
 	arguments  docopt.Opts
@@ -115,7 +115,7 @@ func main() {
 
 	// We return version of program and exit with Ok status
 	if params.version {
-		fmt.Printf("check_ciscoswitch version %s-build %s\n", version, buildcount)
+		fmt.Printf("check_ciscoasa version %s-build %s\n", version, buildcount)
 		os.Exit(ict.UnkExit)
 	}
 
