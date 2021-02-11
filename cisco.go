@@ -40,7 +40,7 @@ func (asa *CiscoASA) CheckStatus(host string, username string, password string, 
 	var ssh *ict.SSHTools
 
 	var reCooling = regexp.MustCompile(`(?mi)^\s*cooling Fan\s+(?P<number>\d+)\s*:\s+(?P<rpm>\d+)\s+RPM\s+-\s+(?P<status>.+)$`)
-	var reCPUTemp = regexp.MustCompile(`(?mi)^\s*Processor\s+(?P<number>\d+):\s*(?P<temp>\d+\.\d)\s+C\s+-\s+(?P<status>.+)$`)
+	var reCPUTemp = regexp.MustCompile(`(?mi)^\s*Processor\s+(?P<number>\d+):\s*(?P<temp>\d+\.\d)\s+C\s+-\s+(?P<status>[^\s]*).*$`)
 	var reAmbient = regexp.MustCompile(`(?mi)^\s*Ambient\s+(?P<number>\d+):\s*(?P<temp>\d+\.\d)\s+C\s+-\s+(?P<status>.*)\s+\((?P<name>.*)\)\s*$`)
 	var reCPU = regexp.MustCompile(`(?mi)^CPU utilization for.*=\s*(?P<cpu_5s>\d*)%;.*:\s*(?P<cpu_1m>\d*)%;.*:\s*(?P<cpu_5m>\d*)%\s*$`)
 	var reMem = regexp.MustCompile(`(?mi)^Free memory:\s+(?P<free_memory>\d+).+\((?P<percent_free_memory>\d*)%\)\s*$`)
